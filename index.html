@@ -1,0 +1,513 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Block World</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;overflow:hidden;background:#87ceeb;font-family:Arial,sans-serif;user-select:none}
+canvas{display:block}
+#crosshair{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);color:white;font-size:25px;text-shadow:1px 1px 3px #000;pointer-events:none}
+#hotbar{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);display:flex;gap:3px;padding:4px;background:#2229;border:2px solid #ffffff77}
+.slot{width:43px;height:45px;border:2px solid #777;background:#333b;position:relative;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.slot.selected{border:3px solid white;background:#ffffff44}
+.blockIcon{width:25px;height:25px;border:2px solid #0004}
+.count{position:absolute;right:2px;bottom:1px;color:white;font-size:12px;text-shadow:1px 1px 2px black}
+#health{position:fixed;left:50%;bottom:73px;transform:translateX(-50%);display:flex;gap:3px;white-space:nowrap;font-size:22px;line-height:25px;color:#ff3333;text-shadow:2px 2px #222;pointer-events:none}
+.heart{display:inline-block}
+.heart.empty{color:#555;text-shadow:1px 1px #111}
+#inventory{display:none;position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:340px;padding:18px;background:#9b9b9b;border:4px solid #333;box-shadow:0 0 0 100vmax #0008;color:white}
+#inventory h2{margin:0 0 14px}
+#inventoryGrid{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}
+.invSlot{height:58px;background:#555;border:2px solid #aaa;display:flex;align-items:center;justify-content:center;gap:5px;font-size:12px}
+.invSlot .blockIcon{width:22px;height:22px;flex-shrink:0}
+#start,#death{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#0006;color:white}
+#start button,#death button{border:2px solid white;background:#222d;color:white;padding:15px 35px;font-size:22px;cursor:pointer}
+#death{display:none;background:#000b;flex-direction:column;gap:18px}
+#death h1{font-size:52px;color:#d33;text-shadow:3px 3px #222;margin:0}
+#death button:hover,#start button:hover{background:#555}
+@media(max-width:500px){
+ .slot{width:32px;height:39px}
+ #hotbar{gap:1px;padding:3px}
+ .blockIcon{width:19px;height:19px}
+ .count{font-size:10px}
+ #health{font-size:17px;gap:2px;bottom:67px}
+}
+</style>
+</head>
+<body>
+<div id="crosshair">+</div>
+<div id="health"></div>
+<div id="hotbar"></div>
+
+<div id="inventory">
+  <h2>Inventory</h2>
+  <div id="inventoryGrid"></div>
+</div>
+
+<div id="start"><button id="startButton">▶ PLAY</button></div>
+
+<div id="death">
+  <h1>YOU DIED</h1>
+  <button id="respawnButton">↻ RESPAWN</button>
+</div>
+
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js';
+
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x87ceeb);
+scene.fog=new THREE.Fog(0x87ceeb,25,95);
+
+const camera=new THREE.PerspectiveCamera(75,innerWidth/innerHeight,0.1,180);
+camera.rotation.order='YXZ';
+
+const renderer=new THREE.WebGLRenderer({antialias:false});
+renderer.setSize(innerWidth,innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+document.body.appendChild(renderer.domElement);
+
+scene.add(new THREE.HemisphereLight(0xcce7ff,0x65513a,1.6));
+const sun=new THREE.DirectionalLight(0xffffff,1.2);
+sun.position.set(20,35,10);
+scene.add(sun);
+
+const materials={
+ Grass:new THREE.MeshLambertMaterial({color:0x55a83b}),
+ Dirt:new THREE.MeshLambertMaterial({color:0x87552f}),
+ Stone:new THREE.MeshLambertMaterial({color:0x858585}),
+ Wood:new THREE.MeshLambertMaterial({color:0x79502c}),
+ Leaves:new THREE.MeshLambertMaterial({color:0x2e792b}),
+ Sand:new THREE.MeshLambertMaterial({color:0xd8c27b})
+};
+const blockNames=Object.keys(materials);
+const blockColors={
+ Grass:'#55a83b',Dirt:'#87552f',Stone:'#858585',
+ Wood:'#79502c',Leaves:'#2e792b',Sand:'#d8c27b'
+};
+
+// Ten hotbar slots. The first six contain the available block types.
+const hotbarItems=[
+ 'Grass','Dirt','Stone','Wood','Leaves','Sand',
+ null,null,null,null
+];
+
+const blocks=new Map();
+const blockMeshes=new Map();
+const zombies=[];
+const blockGeo=new THREE.BoxGeometry(1,1,1);
+
+function key(x,y,z){return `${x},${y},${z}`}
+function getBlock(x,y,z){return blocks.get(key(x,y,z))}
+function setBlock(x,y,z,type){
+ x=Math.round(x);y=Math.round(y);z=Math.round(z);
+ const k=key(x,y,z);
+ if(blockMeshes.has(k)){
+  scene.remove(blockMeshes.get(k));
+  blockMeshes.delete(k);
+ }
+ if(!type){blocks.delete(k);return}
+ blocks.set(k,type);
+ const mesh=new THREE.Mesh(blockGeo,materials[type]);
+ mesh.position.set(x,y,z);
+ scene.add(mesh);
+ blockMeshes.set(k,mesh);
+}
+function heightAt(x,z){
+ return Math.floor(2+Math.sin(x*0.23)*1.3+Math.cos(z*0.19)*1.2);
+}
+
+for(let x=-22;x<=22;x++){
+ for(let z=-22;z<=22;z++){
+  const h=heightAt(x,z);
+  for(let y=-2;y<=h;y++){
+   setBlock(x,y,z,y===h?'Grass':y>h-3?'Dirt':'Stone');
+  }
+ }
+}
+
+// Trees
+for(let x=-19;x<=19;x+=5){
+ for(let z=-19;z<=19;z+=6){
+  if(Math.random()<0.45)continue;
+  if(Math.abs(x)<4&&Math.abs(z)<4)continue;
+  const h=heightAt(x,z);
+  for(let y=1;y<=3;y++)setBlock(x,h+y,z,'Wood');
+  for(let dx=-2;dx<=2;dx++){
+   for(let dz=-2;dz<=2;dz++){
+    for(let dy=2;dy<=4;dy++){
+     if(Math.abs(dx)+Math.abs(dz)+Math.abs(dy-3)<5&&
+        !getBlock(x+dx,h+dy,z+dz)){
+      setBlock(x+dx,h+dy,z+dz,'Leaves');
+     }
+    }
+   }
+  }
+ }
+}
+
+const player={
+ x:0,y:8,z:0,vy:0,yaw:0,pitch:0,
+ grounded:false,health:10,dead:false
+};
+
+const inventory={Grass:24,Dirt:32,Stone:20,Wood:12,Leaves:8,Sand:12};
+let selected=0;
+let inventoryOpen=false;
+let started=false;
+let dragging=false;
+let lastX=0,lastY=0;
+const held={};
+const clock=new THREE.Clock();
+
+function buildHotbar(){
+ const bar=document.getElementById('hotbar');
+ bar.innerHTML='';
+ hotbarItems.forEach((name,i)=>{
+  const slot=document.createElement('div');
+  slot.className='slot'+(i===selected?' selected':'');
+  if(name){
+   slot.innerHTML=
+    `<div class="blockIcon" style="background:${blockColors[name]}"></div>`+
+    `<span class="count">${inventory[name]}</span>`;
+  }
+  bar.appendChild(slot);
+ });
+}
+function buildInventory(){
+ const grid=document.getElementById('inventoryGrid');
+ grid.innerHTML='';
+ blockNames.forEach(name=>{
+  const item=document.createElement('div');
+  item.className='invSlot';
+  item.innerHTML=
+   `<div class="blockIcon" style="background:${blockColors[name]}"></div>`+
+   `<span>${name}<br>${inventory[name]}</span>`;
+  grid.appendChild(item);
+ });
+}
+function updateHealth(){
+ const healthEl=document.getElementById('health');
+ healthEl.innerHTML='';
+ for(let i=0;i<10;i++){
+  const heart=document.createElement('span');
+  heart.className='heart'+(i>=player.health?' empty':'');
+  heart.textContent=i<player.health?'♥':'♡';
+  healthEl.appendChild(heart);
+ }
+}
+buildHotbar();
+buildInventory();
+updateHealth();
+
+function solidAt(px,py,pz){
+ const r=0.3;
+ for(let x=Math.floor(px-r);x<=Math.floor(px+r);x++){
+  for(let y=Math.floor(py);y<=Math.floor(py+1.7);y++){
+   for(let z=Math.floor(pz-r);z<=Math.floor(pz+r);z++){
+    if(getBlock(x,y,z))return true;
+   }
+  }
+ }
+ return false;
+}
+function moveHorizontal(dx,dz){
+ if(!solidAt(player.x+dx,player.y,player.z))player.x+=dx;
+ if(!solidAt(player.x,player.y,player.z+dz))player.z+=dz;
+}
+function moveVertical(dy){
+ if(!solidAt(player.x,player.y+dy,player.z)){
+  player.y+=dy;
+  player.grounded=false;
+ }else{
+  if(dy<0)player.grounded=true;
+  player.vy=0;
+ }
+}
+function hurt(amount){
+ if(player.dead)return;
+ player.health=Math.max(0,player.health-amount);
+ updateHealth();
+ if(player.health<=0)die();
+}
+function die(){
+ if(player.dead)return;
+ player.dead=true;
+ dragging=false;
+ document.getElementById('death').style.display='flex';
+ // Inventory and collected blocks are preserved.
+}
+function respawn(){
+ player.x=0;
+ player.z=0;
+ player.y=heightAt(0,0)+3;
+ player.vy=0;
+ player.yaw=0;
+ player.pitch=0;
+ player.grounded=false;
+ player.health=10;
+ player.dead=false;
+ updateHealth();
+ document.getElementById('death').style.display='none';
+ // Inventory is deliberately not reset.
+ buildHotbar();
+ buildInventory();
+}
+document.getElementById('respawnButton').addEventListener('click',respawn);
+
+function makeZombie(x,z){
+ const group=new THREE.Group();
+ const green=new THREE.MeshLambertMaterial({color:0x477d42});
+ const shirt=new THREE.MeshLambertMaterial({color:0x344f9a});
+ const pants=new THREE.MeshLambertMaterial({color:0x343c69});
+ function part(w,h,d,mat,px,py,pz){
+  const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat);
+  m.position.set(px,py,pz);
+  group.add(m);
+  return m;
+ }
+ part(0.65,0.8,0.35,green,0,1.35,0);
+ part(0.55,0.55,0.55,green,0,2.05,0);
+ part(0.28,0.85,0.28,shirt,-0.48,1.35,0);
+ part(0.28,0.85,0.28,shirt,0.48,1.35,0);
+ part(0.27,0.8,0.28,pants,-0.18,0.4,0);
+ part(0.27,0.8,0.28,pants,0.18,0.4,0);
+ const eyes=new THREE.MeshBasicMaterial({color:0xffffff});
+ part(0.12,0.08,0.04,eyes,-0.13,2.1,-0.285);
+ part(0.12,0.08,0.04,eyes,0.13,2.1,-0.285);
+ group.position.set(x,heightAt(Math.round(x),Math.round(z))+1,z);
+ scene.add(group);
+ zombies.push({group,hp:3,attack:0});
+}
+for(let i=0;i<7;i++){
+ let x,z;
+ do{
+  x=Math.floor(Math.random()*35-17);
+  z=Math.floor(Math.random()*35-17);
+ }while(Math.abs(x)<5&&Math.abs(z)<5);
+ makeZombie(x,z);
+}
+
+const raycaster=new THREE.Raycaster();
+raycaster.far=6;
+
+function interact(button){
+ if(!started||player.dead||inventoryOpen)return;
+ raycaster.setFromCamera(new THREE.Vector2(0,0),camera);
+ const targets=[
+  ...Array.from(blockMeshes.values()),
+  ...zombies.flatMap(z=>z.group.children)
+ ];
+ const hits=raycaster.intersectObjects(targets,false);
+ if(!hits.length)return;
+
+ const hit=hits[0];
+ const zombie=zombies.find(z=>z.group.children.includes(hit.object));
+
+ if(button===0){
+  if(zombie){
+   zombie.hp--;
+   if(zombie.hp<=0){
+    scene.remove(zombie.group);
+    zombies.splice(zombies.indexOf(zombie),1);
+    if(Math.random()<0.65){
+     const drop=blockNames[Math.floor(Math.random()*blockNames.length)];
+     inventory[drop]++;
+     buildHotbar();
+     buildInventory();
+    }
+   }
+  }else{
+   const pos=hit.object.position;
+   const type=getBlock(pos.x,pos.y,pos.z);
+   if(type){
+    setBlock(pos.x,pos.y,pos.z,null);
+    inventory[type]++;
+    buildHotbar();
+    buildInventory();
+   }
+  }
+ }else if(button===2&&!zombie){
+  const p=hit.object.position;
+  const n=hit.face.normal;
+  const x=Math.round(p.x+n.x);
+  const y=Math.round(p.y+n.y);
+  const z=Math.round(p.z+n.z);
+  const type=hotbarItems[selected];
+
+  if(type&&inventory[type]>0&&!getBlock(x,y,z)){
+   const overlapsPlayer=
+    Math.abs(x-player.x)<0.8&&
+    Math.abs(z-player.z)<0.8&&
+    y>=player.y&&y<=player.y+1.7;
+
+   if(!overlapsPlayer){
+    setBlock(x,y,z,type);
+    inventory[type]--;
+    buildHotbar();
+    buildInventory();
+   }
+  }
+ }
+}
+
+document.getElementById('startButton').addEventListener('click',()=>{
+ started=true;
+ document.getElementById('start').style.display='none';
+ renderer.domElement.focus();
+});
+
+renderer.domElement.addEventListener('mousedown',e=>{
+ if(!started||player.dead||inventoryOpen)return;
+ dragging=true;
+ lastX=e.clientX;
+ lastY=e.clientY;
+ if(e.button===0)interact(0);
+});
+addEventListener('mouseup',()=>dragging=false);
+addEventListener('mousemove',e=>{
+ if(!dragging||!started||player.dead||inventoryOpen)return;
+ const dx=e.clientX-lastX;
+ const dy=e.clientY-lastY;
+ lastX=e.clientX;
+ lastY=e.clientY;
+ player.yaw-=dx*0.004;
+ player.pitch-=dy*0.004;
+ player.pitch=Math.max(-1.5,Math.min(1.5,player.pitch));
+});
+renderer.domElement.addEventListener('contextmenu',e=>{
+ e.preventDefault();
+ interact(2);
+});
+
+addEventListener('keydown',e=>{
+ held[e.code]=true;
+ if(['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)){
+  e.preventDefault();
+ }
+ if(e.repeat)return;
+
+ if(e.code==='KeyE'&&started&&!player.dead){
+  inventoryOpen=!inventoryOpen;
+  document.getElementById('inventory').style.display=inventoryOpen?'block':'none';
+  buildInventory();
+ }
+
+ // Number keys 1-9 select slots 1-9; 0 selects slot 10.
+ if(e.code.startsWith('Digit')){
+  const digit=Number(e.code.slice(5));
+  const index=digit===0?9:digit-1;
+  if(index>=0&&index<10){
+   selected=index;
+   buildHotbar();
+  }
+ }
+});
+addEventListener('keyup',e=>held[e.code]=false);
+addEventListener('wheel',e=>{
+ selected=(selected+(e.deltaY>0?1:9))%10;
+ buildHotbar();
+});
+
+let dayTime=0;
+let zombieSpawnTimer=0;
+
+function updateSky(dt){
+ dayTime+=dt*0.025;
+ const daylight=(Math.sin(dayTime)+1)/2;
+ const sky=new THREE.Color().setRGB(
+  0.025+0.51*daylight,
+  0.035+0.72*daylight,
+  0.12+0.8*daylight
+ );
+ scene.background=sky;
+ scene.fog.color.copy(sky);
+ sun.intensity=0.15+1.2*daylight;
+ sun.position.set(Math.cos(dayTime)*35,Math.sin(dayTime)*35,10);
+}
+
+function updateZombies(dt){
+ for(const z of [...zombies]){
+  const g=z.group;
+  z.attack-=dt;
+  const dx=player.x-g.position.x;
+  const dz=player.z-g.position.z;
+  const dist=Math.hypot(dx,dz);
+
+  if(dist<18&&dist>1.1&&!player.dead){
+   g.position.x+=dx/dist*dt*1.15;
+   g.position.z+=dz/dist*dt*1.15;
+   g.rotation.y=Math.atan2(dx,dz);
+  }
+  if(dist<1.35&&!player.dead&&z.attack<=0){
+   hurt(1);
+   z.attack=1.2;
+  }
+  const gx=Math.round(g.position.x);
+  const gz=Math.round(g.position.z);
+  g.position.y=heightAt(gx,gz)+1;
+ }
+ zombieSpawnTimer+=dt;
+ if(zombieSpawnTimer>18&&zombies.length<10){
+  zombieSpawnTimer=0;
+  const angle=Math.random()*Math.PI*2;
+  makeZombie(
+   player.x+Math.cos(angle)*14,
+   player.z+Math.sin(angle)*14
+  );
+ }
+}
+
+function animate(){
+ requestAnimationFrame(animate);
+ const dt=Math.min(clock.getDelta(),0.04);
+
+ if(started&&!player.dead&&!inventoryOpen){
+  const wasGrounded=player.grounded;
+  if(held.Space&&wasGrounded)player.vy=7.5;
+
+  let forward=0,side=0;
+  if(held.KeyW||held.ArrowUp)forward+=1;
+  if(held.KeyS||held.ArrowDown)forward-=1;
+  if(held.KeyD||held.ArrowRight)side+=1;
+  if(held.KeyA||held.ArrowLeft)side-=1;
+
+  const len=Math.hypot(forward,side)||1;
+  forward/=len;
+  side/=len;
+
+  const speed=5.5;
+  const dx=(-Math.sin(player.yaw)*forward+
+   Math.cos(player.yaw)*side)*speed*dt;
+  const dz=(-Math.cos(player.yaw)*forward-
+   Math.sin(player.yaw)*side)*speed*dt;
+
+  moveHorizontal(dx,dz);
+
+  player.vy-=19*dt;
+  const oldVy=player.vy;
+  moveVertical(player.vy*dt);
+  if(oldVy< -13&&player.grounded)hurt(1);
+
+  updateSky(dt);
+  updateZombies(dt);
+
+  if(player.y < -20)die();
+ }
+
+ camera.position.set(player.x,player.y+1.55,player.z);
+ camera.rotation.set(player.pitch,player.yaw,0,'YXZ');
+ renderer.render(scene,camera);
+}
+animate();
+
+addEventListener('resize',()=>{
+ camera.aspect=innerWidth/innerHeight;
+ camera.updateProjectionMatrix();
+ renderer.setSize(innerWidth,innerHeight);
+});
+</script>
+</body>
+</html>
